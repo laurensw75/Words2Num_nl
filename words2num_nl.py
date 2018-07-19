@@ -58,225 +58,245 @@ getallen = {
     'biljoen': 1000000000000
 }
 
-def byteify(input):
-    if isinstance(input, dict):
-        return {byteify(key): byteify(value)
-                for key, value in input.iteritems()}
-    elif isinstance(input, list):
-        return [byteify(element) for element in input]
-    elif isinstance(input, unicode):
-        return input.encode('utf-8')
-    else:
-        return input
+looked=False
+line=''
 
-def convert_block(words):
+class Transcript:
 
-    # Convert a list of words into an integer value.
-    # The input list should only contain numeric terms
+    def __init__(self):
+        self.words = []
+        self.ident = ''
+        self.event = ''
+        self.channel = []
+        self.start = []
+        self.duration = []
+        self.pp = []
+        self.result = []
+        self.offset = []
+        self.valid = False
 
-    value=0
-    nomatch=True
+    def isValid(self):
+        return self.valid
 
-    for i, w in enumerate(number_blocks):
-        try:
-            index=words.index(number_blocks[i])
-            if index==0:
-                value=1
-            else:
-                value=convert_block(words[0:index])
-            rest=convert_block(words[index+1:])
-            value=(value*getallen[w])+rest
-            nomatch=False
-            break
-        except:
-            continue
+    def __byteify(self, input):
+        if isinstance(input, dict):
+            return {byteify(key): byteify(value)
+                    for key, value in input.iteritems()}
+        elif isinstance(input, list):
+            return [byteify(element) for element in input]
+        elif isinstance(input, unicode):
+            return input.encode('utf-8')
+        else:
+            return input
 
-    if nomatch:
-        for w in words:
-            value+=getallen[w]
-
-    return value
-
-def main():
-    looked=False
-    while 1:
-        ident = ''
-        event = ''
-        channel = []
-        start = []
-        duration = []
-        words = []
-        pp = []
-        numbers = []
-        result = []
-        offset = []
+    def readInput(self):
+        global looked
+        global line
 
         if not looked:
-            line=sys.stdin.readline()
+            line = sys.stdin.readline()
         else:
-            looked=False
-        if not line: break
+            looked = False
+        if not line:
+            self.valid = False
+            return
 
-        # This script can handle various input formats: .ctm, plaintext, or a JSON string as produced by the Kaldi
-        # live recognition setup.
+        self.valid = True
 
-        while re.match(r'^(\S+)\s+\S+\s+[0-9.]+\s+[0-9.]+\s+\S+(\s+[0-9.]+)?$',line):
-            # For a CTM file read all lines for a file descriptor (column 1)
-            parts=line.strip().split()
-            if (not ident) or (parts[0]==ident):
+        while re.match(r'^(\S+)\s+\S+\s+[0-9.]+\s+[0-9.]+\s+\S+(\s+[0-9.]+)?$', line):
+            # For a CTM file read all lines with the same file descriptor (column 1)
+            parts = line.strip().split()
+            if (not self.ident) or (parts[0] == self.ident):
                 # treat the ctm as a single line for each identifier string
-                ident=parts[0]
-                channel.append(parts[1])
-                start.append(float(parts[2]))
-                duration.append(float(parts[3]))
-                words.append(parts[4])
-                if len(parts)>5: pp.append(float(parts[5]))
-                line=sys.stdin.readline()
-                if not line: break
+                self.ident = parts[0]
+                self.channel.append(parts[1])
+                self.start.append(float(parts[2]))
+                self.duration.append(float(parts[3]))
+                self.words.append(parts[4])
+                if len(parts) > 5:
+                    self.pp.append(float(parts[5]))
+                line = sys.stdin.readline()
+                if not line:
+                    break
             else:
                 # new identifier
-                looked=True
+                looked = True
                 break
-        if not ident:
+
+        if not self.ident:
             # file is either JSON or plaintext
             try:
-                event=json.loads(line)
-                # Obviously there could be many different types of json content
-                # we can only handle the type that is produced by the Kaldi-ASR system
-                # this way you can use this script as a full post processor, for
-                # example in live recognition
-
+                self.event = json.loads(line)
+                # We assume that JSON content follows the format that is produced
+                # by the Kaldi-ASR system. This script can be used as a post processing step,
+                # for example in 'live' recognition
                 # pull apart to process each entry
-                for hypo in event["result"]["hypotheses"]:
-                    line = byteify(hypo["transcript"])
+                for hypo in self.event["result"]["hypotheses"]:
+                    line = self.__byteify(hypo["transcript"])
                     line = re.sub(r'(\S)(\.|,)', r'\1 \2', line)
-                    words.extend(line.strip().split())
-                    words.append("ENDTRANSCRIPT")
+                    self.words.extend(line.strip().split())
+                    self.words.append("ENDTRANSCRIPT")
                     if hypo["transcript"]:
                         # sometimes we get empty transcripts and therefore empty alignments.
                         for word in hypo["word-alignment"]:
-                            words.append(byteify(word["word"]))
-                            start.append(float(word["start"]))
-                            duration.append(float(word["length"]))
-                            pp.append(float(word["confidence"]))
-                    words.append("ENDHYPO")
+                            self.words.append(self.__byteify(word["word"]))
+                            self.start.append(float(word["start"]))
+                            self.duration.append(float(word["length"]))
+                            self.pp.append(float(word["confidence"]))
+                    self.words.append("ENDHYPO")
             except:
                 # plaintext input may have certain punctuation that may interfere with the detection of numbers
-                if line.strip() == "":
-                    print
-                    sys.stdout.flush()
-                    continue
-                line=re.sub(r'(\S)(\.|,)', r'\1 \2', line)
-                words=line.strip().split()
+                line = re.sub(r'(\S)(\.|,)', r'\1 \2', line)
+                self.words = line.strip().split()
 
-        # Interpret lines so that numeric parts are converted and the rest is passed along untouched.
-        # A particular challenge is the word 'en' (and) which can occur both as part of a number or
-        # as a very common non-numeric word. In certain cases this leads to ambiguous sentences.
-        # We cannot disambiguate those automatically within the scope of this script.
+    def convertBlock(self, words):
 
-        for w in words:
+        # Convert a list of words into an integer value.
+        # The input list should only contain numeric terms
+
+        value = 0
+        nomatch = True
+
+        for i, w in enumerate(number_blocks):
+            try:
+                index = words.index(number_blocks[i])
+                if index == 0:
+                    value = 1
+                else:
+                    value = self.convertBlock(words[0:index])
+                rest = self.convertBlock(words[index + 1:])
+                value = (value * getallen[w]) + rest
+                nomatch = False
+                break
+            except:
+                continue
+
+        if nomatch:
+            for w in words:
+                value += getallen[w]
+
+        return value
+
+    def convert(self):
+        numbers = []
+        for w in self.words:
             if (w in dd and len(numbers)>0 and numbers[-1] in dd):
-                result.append(str(convert_block(numbers)))
-                offset.append(len(numbers))
+                self.result.append(str(self.convertBlock(numbers)))
+                self.offset.append(len(numbers))
                 numbers = []
                 numbers.append(w)
             elif (w in digits and len(numbers) > 1 and numbers[-1] == 'en' and numbers[-2] in ['honderd', 'duizend']):
                 numbers.append(w)
             elif (w in dnb and len(numbers)>1 and numbers[-1]=='en' and numbers[-2] in dnb) or (w=='en' and len(numbers)>0 and numbers[-1] not in dnb):
-                result.append(str(convert_block(numbers)))
-                offset.append(len(numbers)-1)
-                result.append('en')
-                offset.append(1)
+                self.result.append(str(self.convertBlock(numbers)))
+                self.offset.append(len(numbers)-1)
+                self.result.append('en')
+                self.offset.append(1)
                 numbers=[]
                 numbers.append(w)
             elif (w=='en' and len(numbers)==0):
-                result.append('en')
-                offset.append(1)
+                self.result.append('en')
+                self.offset.append(1)
             elif w in getallen:
                 numbers.append(w)
             else:
                 if len(numbers):
-                    result.append(str(convert_block(numbers)))
+                    self.result.append(str(self.convertBlock(numbers)))
                     if numbers[-1]=='en':
-                        result.append('en')
-                        offset.append(len(numbers)-1)
-                        offset.append(1)
-                    else: offset.append(len(numbers))
+                        self.result.append('en')
+                        self.offset.append(len(numbers)-1)
+                        self.offset.append(1)
+                    else: self.offset.append(len(numbers))
                     numbers = []
-                result.append(w)
-                offset.append(1)
+                self.result.append(w)
+                self.offset.append(1)
         if len(numbers):
-            result.append(str(convert_block(numbers)))
-            offset.append(len(numbers))
+            self.result.append(str(self.convertBlock(numbers)))
+            self.offset.append(len(numbers))
 
-        # print converted
-        # result=' '.join(final_string)
-
+    def handleCommas(self):
         # remove spaces for individual digits after a comma (used as a period in Dutch)
         # and replace the word comma with an actual comma
         i=1
-        while i<(len(result)-1):
-            if result[i]=='komma' and re.match(r'\d+', result[i-1]) and re.match(r'\d+', result[i+1]):
-                result[i-1]=result[i-1] + ',' + result[i+1]
-                offset[i-1]+=1 + offset[i+1]
-                del result[i: i+2]
-                del offset[i: i+2]
-                while len(result)>i and re.match(r'^\d$', result[i]):
+        while i<(len(self.result)-1):
+            if self.result[i]=='komma' and re.match(r'\d+', self.result[i-1]) and re.match(r'\d+', self.result[i+1]):
+                self.result[i-1]=self.result[i-1] + ',' + self.result[i+1]
+                self.offset[i-1]+=1 + self.offset[i+1]
+                del self.result[i: i+2]
+                del self.offset[i: i+2]
+                while len(self.result)>i and re.match(r'^\d$', self.result[i]):
                     # after a comma, add any additional individual digits
-                    result[i-1]=result[i-1] + result[1]
-                    offset[i-1]+=offset[i]
-                    del result[i]
-                    del offset[i]
+                    self.result[i-1]=self.result[i-1] + self.result[1]
+                    self.offset[i-1]+=self.offset[i]
+                    del self.result[i]
+                    del self.offset[i]
             else:
                 i+=1
 
+    def handleCombos(self):
         # Typically a combination of two 2-digit terms refers to either a calendar year or part of a Dutch zipcode
         # We combine them if possible, but beware that this may introduce mistakes here and there
         i = 1
-        while i < (len(result)):
-            if re.match(r'^\d{2}$', result[i-1]) and re.match(r'^\d{2}$', result[i]):
-                if (i>1 and re.match(r'^\d{2}$', result[i-2])) or (i<(len(result)-1) and re.match(r'^\d{2}$', result[i+1])):
+        while i < (len(self.result)):
+            if re.match(r'^\d{2}$', self.result[i-1]) and re.match(r'^\d{2}$', self.result[i]):
+                if (i>1 and re.match(r'^\d{2}$', self.result[i-2])) or (i<(len(self.result)-1) and re.match(r'^\d{2}$', self.result[i+1])):
                     # don't do anything if it's not just two two-digit groups
                     i+=1
                 else:
-                    result[i-1]=result[i-1]+result[i]
-                    offset[i-1]+=offset[i]
-                    del result[i]
-                    del offset[i]
+                    self.result[i-1]=self.result[i-1]+self.result[i]
+                    self.offset[i-1]+=self.offset[i]
+                    del self.result[i]
+                    del self.offset[i]
             else:
                 i+=1
 
-        if ident:
+    def words2num(self):
+        self.convert()
+        self.handleCommas()
+        self.handleCombos()
+
+    def getResult(self):
+        output=''
+
+        if self.ident:
             # if the input was a .ctm file, recreate it
-            i=0
-            ii=0
-            while i<(len(result)):
-                print ident + ' ' + channel[ii] + ' ' + "{:.2f}".format(start[ii]) + ' ' + "{:.2f}".format(sum(duration[ii:ii+offset[i]])) + ' ' + result[i],
-                if len(pp):
-                    print "{:.3f}".format(min(pp[ii:ii+offset[i]]))
+            i = 0
+            ii = 0
+            while i < len(self.result):
+                output += "%s %s %.2f %.2f %s" % ( self.ident, self.channel[ii], self.start[ii], sum(self.duration[ii:ii+self.offset[i]]), self.result[i] )
+                if len(self.pp):
+                    output +=  "%.3f\n" % ( min(self.pp[ii:ii+self.offset[i]]) )
                 else:
-                    print
-                ii+=offset[i]
+                    output += "\n"
+                ii+=self.offset[i]
                 i+=1
-        elif event:
-            # rebuild the json string
-            i=0
-            hypno=0
-            line=""
+
+        elif self.event:
+            # rebuild the json string, be non-destructive
+            event = self.event.copy()
+            result = self.result[:]
+            offset = self.offset[:]
+            duration = self.duration[:]
+            start = self.start[:]
+            pp = self.pp[:]
+
+            i = 0
+            hypno = 0
             while len(result):
                 wa=0
-                # first rewrite the transcript part
+                # rewrite the transcript part
                 while result[0]!="ENDTRANSCRIPT":
-                    line+=result[0]+' '
+                    output += result[0] + ' '
                     del result[0]
                     del offset[0]
                 del result[0]
                 del offset[0]
+
                 # get rid of the extra space before some punctuation
-                line = re.sub(r'\s(\.|,)', r'\1', line)
-                event["result"]["hypotheses"][hypno]["transcript"]=line.strip()
-                line=""
-                # second rewrite the individual words
+                output = re.sub(r'\s(\.|,)', r'\1', output)
+                event["result"]["hypotheses"][hypno]["transcript"]=output.strip()
+                output = ''
+                # rewrite the individual words
                 while result[0]!="ENDHYPO":
                     event["result"]["hypotheses"][hypno]["word-alignment"][wa]["word"]=result[0]
                     del result[0]
@@ -286,7 +306,7 @@ def main():
                     del duration[:offset[0]]
                     event["result"]["hypotheses"][hypno]["word-alignment"][wa]["confidence"] = min(pp[:offset[0]])
                     del pp[:offset[0]]
-                    wa+=1
+                    wa += 1
                     del offset[0]
                 try:
                     while 1: del event["result"]["hypotheses"][hypno]["word-alignment"][wa]
@@ -295,14 +315,29 @@ def main():
                 del result[0]
                 del offset[0]
                 hypno+=1
-            print json.dumps(event)
-            sys.stdout.flush()
+            output = json.dumps(event)
+
         else:
             # or just output plaintext
-            result=' '.join(result)
+            if len(self.result)>0:
+                output=' '.join(self.result)
+            else:
+                output=''
             # get rid of the extra space before some punctuation
-            result=re.sub(r'\s(\.|,)', r'\1', result)
-            print result
+            output=re.sub(r'\s(\.|,)', r'\1', output)
+
+        return output
+
+def main():
+    while True:
+        transcript = Transcript()
+        transcript.readInput()
+        if transcript.isValid():
+            transcript.words2num()
+            print transcript.getResult()
+            sys.stdout.flush()
+        else:
+            break
 
 if __name__ == "__main__":
     main()
